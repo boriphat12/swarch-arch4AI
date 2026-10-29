@@ -1,14 +1,14 @@
 # Task 4: Deployment topologies and trade-offs
 
-**Name / ชื่อ:**
+**Name / ชื่อ:** บริพัตร อรัญยกานนท์
 
-**Student ID / รหัสนิสิต:**
+**Student ID / รหัสนิสิต:** 6631332221
 
 This is **individual work**: each student completes and submits their own copy, in their own fork.
 
 _งานนี้เป็น**งานเดี่ยว** นิสิตแต่ละคนทำและส่งงานของตัวเอง ใน fork ของตัวเอง_
 
-**Scenario (A, B or C) / Scenario ที่เลือก:**
+**Scenario (A, B or C) / Scenario ที่เลือก:** A. Owner alerts
 
 Choose **one** scenario below. If the last digit of your student ID is odd, take A or B; if it is even, take B or C. Use your measurements from Tutorial 6 as evidence: cite run names from `results/runs.csv`. Answer in Thai or English.
 
@@ -57,11 +57,11 @@ The three most important quality requirements for your scenario, each with a num
 
 _quality requirements ที่สำคัญที่สุด 3 ข้อของ scenario ที่เลือก ระบุตัวเลขเมื่อทำได้_
 
-| #   | Quality         | Requirement                                                                                                                                             |
-| --- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Accuracy        | accuracy ของ label ในรายงานต้องไม่ต่ำกว่า 93.5%                                                                                                         |
-| 2   | Cost efficiency | จำนวน call ไป large model มีเป้า <= 40% ของรีวิว (ค่าที่วัดได้จาก t4-0.8-cache) และเพดานที่ยอมรับได้ ≤ 50% โดย accuracy ต้องไม่ต่ำกว่าข้อ 1             |
-| 3   | Batch latency   | รีวิวทุกรายการ (100%) ของสัปดาห์ต้องมี label ก่อนออกรายงาน batch job ต้องเสร็จภายใน 6 ชั่วโมง และเรียก large model ไม่เกิน 20 calls/s (concurrency ≤ 4) |
+| #   | Quality               | Requirement                                                                                                                                                                                                  |
+| --- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Latency               | เจ้าของร้านได้รับ push notification ของรีวิวเชิงลบภายใน 2 วินาที หลังลูกค้าโพสต์ งบเวลาของการติด label แบ่งเป็น p95 <= 600 ms และกรณีช้าสุด <= 1.2 วินาที (timeout 1 วินาที + เผื่อ overhead 200 ms) เพื่อเหลือเวลาอย่างน้อย 800 ms ให้ส่ง push |
+| 2   | Throughput / Capacity | รองรับ **40 รีวิว/วินาที** ช่วงพีคตอนเที่ยง โดยเรียก large model ไม่เกินเพดาน **20 calls/s** มี**เป้า <= 16 calls/s** (<= 40% ของรีวิว) เพื่อเหลือ headroom 20% และ**เพดานที่ยอมรับได้ 20 calls/s** (<= 50%) |
+| 3   | Alert correctness     | accuracy ของ label ต้องไม่ต่ำกว่า **93.5%** (เท่ากับ large model ตัวเดียว) และเมื่อระบบไม่แน่ใจหรือ large model ตอบไม่ทัน ให้**ไม่ส่ง alert** (ยอมพลาด alert ดีกว่าส่ง alert ผิด)                            |
 
 ## 2. Design / การออกแบบ
 
@@ -69,35 +69,38 @@ Your topology, the patterns you add, and a container-level diagram (C4 level 2).
 
 _topology ที่เลือก pattern ที่เพิ่ม และ diagram ระดับ container (C4 level 2) เขียนด้วย Mermaid_
 
-Topology: T4 Asynchronous / batch
+**Topology:** T3 Hybrid: small model รันเป็น library ภายใน review service ส่วน large model เป็น remote inference service
 
-Patterns ที่ใช้:
+**Patterns ที่ใช้:**
 
-1. Cascade (threshold 0.8): small model ติด label ก่อน ถ้า confidence ≥ 0.8 ก็ใช้ผลนั้นเลย ถ้าต่ำกว่าจึงส่งต่อไป large model
-2. Cache: ข้อความรีวิวที่ซ้ำกัน (normalize แล้ว hash) จะใช้ label เดิม ไม่เรียกโมเดลซ้ำ
-3. ไม่ใช้ fallback ไป small model: งานนี้ไม่มีเรื่อง latency จึงไม่ควรยอมเสีย accuracy ถ้า large model ล่มหรือ timeout ให้ retry ภายหลัง โดยรายการนั้นยังค้างสถานะ pending อยู่ในคิว
+- **Cascade (threshold 0.8):** small model ติด label ทุกรีวิวก่อน ถ้า confidence >= 0.8 ใช้ผลนั้นเลย ถ้าต่ำกว่าจึงส่งต่อไป large model
+- **Cache:** ข้อความรีวิวที่ซ้ำกัน (normalize แล้ว hash) ใช้ label เดิม ไม่เรียกโมเดลซ้ำ ซึ่งลดภาระ large model ช่วงพีค
+- **Timeout แล้วเป็น `PENDING` แทน fallback:** call ไป large model มี timeout 1 วินาที ถ้าไม่ทันรีวิวนั้นจะเป็น `PENDING` และ**ไม่ส่ง alert** ไม่ fallback ไปใช้ผลของ small model ที่ confidence ต่ำ เพราะ alert ผิดเสียหายมากกว่า alert ที่พลาด
+- **ส่วนที่ออกแบบเพิ่ม (ยังไม่ได้วัด):** รีวิวที่เป็น `PENDING` จะถูกติด label ภายหลังเพื่อเก็บสถิติ แต่ไม่ส่ง alert ย้อนหลัง เพราะเลยกรอบ 2 วินาทีไปแล้ว
 
 ```mermaid
 C4Container
-    title Scenario C: Weekly sentiment report (batch + cascade + cache)
+    title Scenario A: Owner alerts (hybrid + cascade + cache)
     Person(customer, "Customer", "Writes restaurant reviews")
-    Person(owner, "Restaurant owner", "Reads weekly sentiment report")
+    Person(owner, "Restaurant owner", "Receives negative-review alerts on phone")
     System_Boundary(campuseats, "CampusEats") {
-        Container(review, "Review service", "Python, FastAPI", "Accepts reviews and stores them unlabeled; no model call on the request path")
-        ContainerDb(reviewdb, "Review DB", "SQL", "Reviews, labels, label status (pending/labeled)")
-        Container(batch, "Weekly batch labeler", "Python, scheduled job, small model as in-process library", "Reads unlabeled reviews, checks cache, scores cache misses with the small model, escalates low-confidence ones")
-        ContainerDb(cache, "Label cache", "Redis / table", "hash(normalized text) -> label")
+        Container(review, "Review service", "Python, FastAPI", "Accepts reviews; cache lookup, then small model as in-process library; escalates confidence < 0.8 to large model with 1 s timeout")
+        ContainerDb(reviewdb, "Review DB", "SQL", "Reviews, labels, label status (labeled/pending)")
+        ContainerDb(cache, "Label cache", "Redis", "hash(normalized text) -> label")
         Container(infer, "Inference service (large model)", "Python, FastAPI", "Accurate sentiment, max 4 concurrent / 20 calls/s")
-        Container(report, "Report service", "Python", "Aggregates labels per restaurant and publishes weekly report")
+        Container(notify, "Notification service", "Python", "Sends push notification for reviews labeled negative")
     }
+    System_Ext(push, "Push provider", "FCM / APNs")
     Rel(customer, review, "Posts reviews", "HTTP/JSON")
-    Rel(review, reviewdb, "Stores review (status=pending)", "SQL")
-    Rel(batch, reviewdb, "Reads pending reviews / writes labels", "SQL")
-    Rel(batch, cache, "Looks up / stores labels", "TCP")
-    Rel(batch, infer, "Escalates confidence < 0.8, rate-limited, retry on failure", "HTTP/JSON")
-    Rel(report, reviewdb, "Reads weekly labels", "SQL")
-    Rel(owner, report, "Views weekly report", "HTTPS")
+    Rel(review, cache, "Looks up / stores labels", "TCP")
+    Rel(review, infer, "Escalates confidence < 0.8, timeout 1 s", "HTTP/JSON")
+    Rel(review, reviewdb, "Stores review and label or PENDING", "SQL")
+    Rel(review, notify, "Negative label (labeled only)", "HTTP/JSON")
+    Rel(notify, push, "Sends alert", "HTTPS")
+    Rel(push, owner, "Push notification")
 ```
+
+small model เป็น component ภายใน review service (ระดับ C4 level 3) จึงไม่วาดเป็น container แยก
 
 ## 3. Evidence / หลักฐาน
 
@@ -105,23 +108,31 @@ Which runs support your choice? Show the numbers and, for scenario A, the capaci
 
 _run ไหนที่สนับสนุนการตัดสินใจของนิสิต ให้นิสิตแสดงตัวเลขประกอบ และสำหรับ scenario A ให้นิสิตแสดงการคำนวณ capacity ด้วย เพื่อแสดงว่าในช่วงพีคนั้น design ของนิสิตต้องใช้ large model กี่ calls ต่อวินาที_
 
-Capacity (สมมติ N = 100,000 รีวิว/สัปดาห์):
+run ที่ขึ้นต้นด้วย `a-` วัดใหม่สำหรับ scenario นี้ ส่วน run `a-peak40-*` ยิงรีวิวแบบ open loop ที่ **40 รีวิว/วินาทีนาน 30 วินาที (1,200 รีวิว)** เพื่อจำลองช่วงพีคตอนเที่ยง โดยใช้ workload ชุดเดียวกับ `tools/loadtest.py`
 
-- large model ที่เป้า 40%: 100,000 × 0.40 ÷ 20 calls/s = 2,000 s ≈ 33 นาที
-- large model ที่เพดาน 50%: 100,000 × 0.50 ÷ 20 = 2,500 s ≈ 42 นาที
-- small model: p50 ≈ 9 ms (t0-small) × 100,000 ≈ 900 s ≈ 15 นาที (คิดแบบรันทีละรายการ)
-- รวมกรณีแย่สุดไม่ถึง 1 ชั่วโมง ยังเหลือเวลาอีกราว 5 ชั่วโมงสำหรับ retry รายการ PENDING
-- ถ้าใช้ 50% ทุก call ใน 6 ชั่วโมงรองรับได้ 6 × 3,600 × 20 = 432,000 calls คือประมาณ 864,000 รีวิว/สัปดาห์ ซึ่งเป็นเพดานของ design นี้
+| Run                                           | What it shows / แสดงอะไร                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a-large`, `a-peak40-large`                   | large model ตัวเดียวได้ accuracy 93.5% แต่เรียก large model 100% (`a-large` ซึ่งได้ผลเท่ากับ `t0-large`) เมื่อยิงจริงที่ 40 รีวิว/วินาที ต้องใช้ large model 40 calls/s ซึ่งเป็น**สองเท่าของเพดาน** คิวจึงล้นจนรีวิว 1,167 จาก 1,200 รายการ (97%) timeout กลายเป็น `PENDING` และจากรีวิวเชิงลบจริง 641 รายการ ส่ง alert ได้เพียง 16 รายการ (recall 2.5%) ตัด T1 ทิ้ง |
+| `a-small`                                     | small model ตัวเดียวได้ accuracy 72.5% (เท่ากับ `t0-small`) คือติด label ผิดประมาณ 1 ใน 4 รีวิว ทำให้เกิด alert ผิดมาก ขัดกับข้อ 3 ตัด T2 ทิ้ง                                                                                                                                                                                                                       |
+| `a-0.8`, `a-peak40-0.8`                       | cascade threshold 0.8 ไม่มี cache ได้ accuracy 93.5% และเรียก large model 64% (`a-0.8` ซึ่งได้ผลเท่ากับ `t2-0.8`) แสดงว่า **0.8 เป็น threshold ต่ำสุดที่ไม่เสีย accuracy** แต่เมื่อยิงจริงที่ 40 รีวิว/วินาที วัดได้ **24.8 calls/s ซึ่งเกินเพดาน** รีวิว 664 จาก 1,200 รายการ (55%) เป็น `PENDING` และ recall ของ alert เหลือ 52.6% จึงใช้ cascade อย่างเดียวไม่พอ  |
+| `t2-0.6`, `t2-0.7`                            | ลด threshold แล้ว accuracy ตกเหลือ 91.5% และ 93.0% ไม่ผ่านข้อ 3 ส่วน `t2-0.7` ยังเรียก large model 53% คือ 21.2 calls/s ซึ่งก็เกินเพดานด้วย                                                                                                                                                                                                                          |
+| `a-0.8-cache`                                 | cascade threshold 0.8 พร้อม cache ได้ accuracy **93.5%** เรียก large model **40%** (cache hit 34%) และ p95 = **559 ms** ซึ่งยืนยันผลของ `t4-0.8-cache` (93.5%, 40%, p95 573 ms)                                                                                                                                                                                      |
+| `a-peak40-0.8-cache`                          | **design ที่เลือก ยิงจริงที่ 40 รีวิว/วินาที:** large model **7.7 calls/s** (230 calls ใน 30 วินาที), pending 0, errors 0, p95 = **258 ms**, ช้าสุด 568 ms และ accuracy 95.7% ส่ง alert เชิงลบ 655 รายการ ผิด 33 รายการ คือ **precision 95.0%** (alert ผิดประมาณ 1 ใน 20) และส่ง alert ได้ 622 จาก 641 รีวิวเชิงลบจริง (recall 97.0%)                                |
+| `t1-before` vs `t1-after`                     | **วัดได้:** เมื่อ large model ค้าง 10% ถ้าไม่มี timeout จะได้ errors 20 รายการ (`t1-before`) แต่เมื่อมี timeout รายการที่ค้างจะเป็น `PENDING` คือ errors 0, pending 27 และ p95 = 1,009 ms (`t1-after`)                                                                                                                                                               |
+| `a-0.8-cache-hang`, `a-peak40-0.8-cache-hang` | **วัดได้:** design ที่เลือกเมื่อ large model ค้าง 10% ที่ 200 รีวิว ได้ errors 0, pending 10 และ p95 492 ms เมื่อยิงที่ 40 รีวิว/วินาที ได้ errors 0, pending 20 จาก 1,200 (1.7%), p95 262 ms, ช้าสุด 1,014 ms (ถูกตัดด้วย timeout 1 วินาที) และ precision ยังเป็น 95.0% **ข้อเสนอใน design:** รายการ `PENDING` จะไม่ส่ง alert (เป็นการพลาด alert ซึ่งยอมรับได้)     |
 
-| Run                   | What it shows / แสดงอะไร                                                                                                                                                                                                                                                                                                           |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| t0-large / baseline   | large model ตัวเดียวได้ accuracy 93.5% แต่เรียก large model 100% ใช้เป็นเพดาน accuracy และเป็นต้นทุนสูงสุด                                                                                                                                                                                                                         |
-| t0-small              | small model ตัวเดียวได้ accuracy 72.5% ต่ำเกินไปสำหรับรายงานที่เน้นความแม่นยำ จึงตัด T2 ทิ้ง                                                                                                                                                                                                                                       |
-| t2-0.8                | cascade threshold 0.8 ที่ไม่มี cache ได้ accuracy 93.5% เท่ากับ large model และเรียก large model 64% แสดงว่า 0.8 เป็น threshold ต่ำสุดที่ไม่เสีย accuracy และ 64% คือกรณีแย่สุดของ design เมื่อ cache ไม่ช่วยเลย                                                                                                                   |
-| t2-0.9                | threshold 0.9 ได้ 93.5% เท่าเดิม แต่เรียก large model 77% แพงขึ้นโดยไม่ได้ accuracy เพิ่ม                                                                                                                                                                                                                                          |
-| t2-0.7, t2-0.6        | ลด threshold ลงแล้ว accuracy ตกเหลือ 93.0% และ 91.5% ซึ่งไม่ผ่าน requirement ข้อ 1                                                                                                                                                                                                                                                 |
-| t4-0.8-cache          | cascade threshold 0.8 พร้อม cache ได้ accuracy 93.5% เท่ากับ t2-0.8 ที่ไม่มี cache แต่เรียก large model ลดลงจาก 64% เหลือ 40% (cache hit 34%) แปลว่าที่ threshold ที่ใช้ใน design นั้น cache ลดการเรียก large model ได้ราว 37.5% (24 จาก 64 จุด) โดย accuracy ไม่ลดลง และผ่าน requirement ข้อ 1 กับข้อ 2 พร้อมกัน                  |
-| t1-before vs t1-after | วัดได้: เมื่อ large model ค้าง 10% ถ้าไม่มี timeout จะได้ errors 20 รายการ (t1-before) แต่เมื่อมี timeout รายการที่ค้างจะถูกตั้งเป็น PENDING แทน คือ errors 0 และ pending 27 (t1-after) ข้อเสนอใน design (ยังไม่ได้วัด): batch job จะนำรายการ PENDING กลับมาเข้าคิวแล้ว retry ภายใน window เดียวกัน แทนการ fallback ไป small model |
+**Capacity ช่วงพีค (40 รีวิว/วินาที):**
+
+| Design              | % ไป large model (n=200) | คำนวณที่พีค                  | วัดจริงที่พีค (`a-peak40-*`) | ผ่านเพดาน 20 calls/s? |
+| ------------------- | ------------------------ | ---------------------------- | ---------------------------- | --------------------- |
+| T1 large ทุกรีวิว   | 100% (`a-large`)         | 40 x 1.00 = 40.0 calls/s     | 40.0 calls/s, pending 97%    | ไม่ผ่าน               |
+| cascade 0.8         | 64% (`a-0.8`)            | 40 x 0.64 = 25.6 calls/s     | 24.8 calls/s, pending 55%    | ไม่ผ่าน               |
+| cascade 0.8 + cache | 40% (`a-0.8-cache`)      | 40 x 0.40 = **16.0 calls/s** | **7.7 calls/s, pending 0%**  | **ผ่าน**              |
+
+- **ตัวเลขที่ใช้เป็นเป้าคือ 16 calls/s ไม่ใช่ 7.7 calls/s:** run ที่พีคส่ง 1,200 รีวิวแต่ test set มีรีวิวไม่ซ้ำแค่ 500 รายการ ข้อความจึงซ้ำกันมากกว่าปกติ (cache hit 68% เทียบกับ 34% ที่ n=200) ค่า 7.7 calls/s จึงดีเกินจริง ส่วน 16 calls/s ใช้ cache hit 34% ซึ่งใกล้กับข้อมูลจริงมากกว่า
+- **ตรวจ concurrency (Little's law):** 16 calls/s x 0.2 s ~ 3.2 calls พร้อมกัน ซึ่งไม่เกิน 4 ที่ large model รับได้
+- **สูตรตรวจกับค่าที่วัดได้:** cache ทำงานก่อน cascade ดังนั้นสัดส่วน large calls ~ 0.64 x (1 - cache hit rate) ได้ 0.64 x (1 - 0.34) ~ 0.42 เทียบกับ 40% ที่วัดได้ และ 0.64 x (1 - 0.68) ~ 0.20 เทียบกับ 19% ที่วัดได้ที่พีค ถ้าจะไม่เกิน 20 calls/s ต้องได้ 40 x 0.64 x (1 - h) <= 20 คือ h >= **22%**
+- **ข้อจำกัดของหลักฐาน:** load test ที่พีคยาวเพียง 30 วินาทีบนเครื่องเดียว และเวลาที่วัดคือจนถึงตอนที่ review service ตอบกลับ ยังไม่รวมเวลาส่ง push notification
 
 ## 4. ADR
 
@@ -129,36 +140,37 @@ Use the ADR format from W5.
 
 _ใช้รูปแบบ ADR จาก W5_
 
-**Title:** ใช้ batch labeling รายสัปดาห์ร่วมกับ cascade (threshold 0.8) และ cache สำหรับ weekly sentiment report
+**Title:** ใช้ hybrid (small model ใน review service + large model เป็น remote service) ร่วมกับ cascade threshold 0.8 และ cache สำหรับ owner alerts
 
 **Status:** Proposed
 
-**Context:** เจ้าของร้านต้องการรายงาน sentiment รายสัปดาห์ ซึ่งไม่ต้อง real-time โดยให้ accuracy สำคัญที่สุดและค่าใช้จ่ายต่ำที่สุด ทุก call ไป large model มีค่าใช้จ่าย และ large model รับได้สูงสุด 20 calls/s small model ถูกและเร็ว แต่ถ้าใช้ตัวเดียวได้ accuracy แค่ 72.5% (t0-small)
+**Context:** เมื่อมีรีวิวเชิงลบ เจ้าของร้านต้องได้รับ push notification ภายใน 2 วินาที ช่วงพีคตอนเที่ยงมีรีวิว 40 รายการ/วินาที แต่ large model รับได้สูงสุด 20 calls/s และทุก call มีค่าใช้จ่าย small model เร็วและถูก แต่ถ้าใช้ตัวเดียวได้ accuracy แค่ 72.5% (`a-small`) การพลาด alert ยอมรับได้ แต่ alert ที่ผิดจะทำให้เจ้าของร้านเลิกเชื่อถือ alert
 
-**Decision:** ใช้ topology T4 (asynchronous / batch) โดย review service เก็บรีวิวไว้โดยยังไม่ติด label แล้ว batch job ที่ตั้งเวลาไว้สัปดาห์ละครั้ง (หรือรายคืน) จะติด label ตามลำดับดังนี้
+**Decision:** ใช้ topology **T3 (hybrid)** โดย review service ติด label แต่ละรีวิวตามลำดับดังนี้
 
-1. ตรวจ cache ก่อน
-2. ถ้าไม่เจอใน cache ให้ small model ติด label
-3. ถ้า confidence < 0.8 ให้ cascade ต่อไป large model โดยจำกัด rate ไว้ที่ ≤ 4 concurrent
+1. ตรวจ **cache** ก่อน
+2. ถ้าไม่เจอใน cache ให้ **small model** (library ภายใน review service) ติด label
+3. ถ้า confidence < 0.8 ให้ **cascade** ต่อไป large model โดยมี timeout 1 วินาที
 
-ถ้า large model ล้มเหลว ให้ retry ภายหลัง ไม่ใช้ fallback ไป small model
+ถ้า large model ตอบไม่ทัน รีวิวนั้นจะเป็น `PENDING` และไม่ส่ง alert ไม่ fallback ไปใช้ผลของ small model ที่ confidence ต่ำ ส่ง alert เฉพาะรีวิวที่ได้ label เชิงลบจริงเท่านั้น
 
 **Consequences:**
 
 - Positive:
-  - accuracy 93.5% เท่ากับใช้ large model ทุกรีวิว โดยเรียก large model เพียง 40% (t4-0.8-cache)
-  - ลดการเรียก large model จาก 100% เหลือ 40% (t4-0.8-cache) โดย accuracy เท่ากับใช้ large model ทุกรีวิว
-  - review service ไม่ต้องรอโมเดล จึงไม่ได้รับผลเมื่อ large model ล่มหรือช้า
-  - batch ควบคุม rate ได้ง่าย จึงไม่เกิน 20 calls/s
-  - retry ได้โดยไม่เสีย accuracy เพราะไม่มีเส้นตาย real-time
+  - accuracy 93.5% เท่ากับใช้ large model ทุกรีวิว โดยเรียก large model เพียง 40% (`a-0.8-cache`)
+  - ช่วงพีคคำนวณได้ 16 calls/s ต่ำกว่าเพดาน 20 calls/s และเหลือ headroom 20% เมื่อยิงจริงที่ 40 รีวิว/วินาทีวัดได้ 7.7 calls/s และไม่มีรีวิวค้างเป็น `PENDING` เลย (`a-peak40-0.8-cache`)
+  - ที่พีค p95 ของการติด label = 258 ms และช้าสุด 568 ms (`a-peak40-0.8-cache`) แม้ large model ค้าง 10% ก็ช้าสุดเพียง 1,014 ms (`a-peak40-0.8-cache-hang`) ทั้งหมดอยู่ในกรอบ 2 วินาที
+  - เมื่อ large model ค้าง ระบบจะพลาด alert (ยอมรับได้) แทนที่จะส่ง alert ผิด (ยอมรับไม่ได้) การรับรีวิวไม่ error (errors 0) และ precision ของ alert ยังเป็น 95.0% (`a-peak40-0.8-cache-hang`)
+  - ลดค่าใช้จ่ายของ large model ลง 60% เมื่อเทียบกับ baseline
 - Negative:
-  - label ไม่พร้อมใช้ทันที จึงเอาไปใช้ในงานที่ต้องการผลเร็ว (เช่น scenario A) ไม่ได้
-  - มีส่วนที่ต้องดูแลเพิ่ม คือ scheduler, cache และสถานะ pending
-  - threshold 0.8 ปรับจาก dataset ทดสอบเพียง 200 รายการ ถ้าข้อมูลจริงต่างไป อาจต้องปรับใหม่
-  - cache ช่วยได้เฉพาะข้อความที่ซ้ำกัน ใน dataset ทดสอบ cache hit อยู่ที่ 34% ถ้าข้อมูลจริงซ้ำน้อยกว่านี้ สัดส่วน call ไป large model จะสูงขึ้น และอาจถึง 64% ถ้าไม่มี hit เลย (t2-0.8) เพื่อรับมือ batch job จะบันทึก cache hit rate และ % large calls ทุกครั้งที่รัน ถ้า cache hit rate ต่ำกว่า 22% (ซึ่งทำให้ large calls เกิน 50%) ให้แจ้งเตือนและทบทวน ADR นี้ เช่น ปรับ normalization ของ cache key หรือยอมรับต้นทุนที่สูงขึ้น โดยห้ามลด threshold ต่ำกว่า 0.8 เพราะ accuracy จะไม่ผ่านข้อ 1
+  - headroom ขึ้นกับ cache hit rate โดยตรง ใน dataset ทดสอบ cache hit อยู่ที่ 34% ถ้าข้อมูลจริงซ้ำน้อยกว่า 22% ช่วงพีคจะเกิน 20 calls/s ทำให้มีคิวรอ large model เกิด timeout และพลาด alert มากขึ้น เพื่อรับมือ review service จะบันทึก cache hit rate และ large calls/s ทุกนาที ถ้า cache hit rate ต่ำกว่า 22% ช่วงเที่ยง ให้แจ้งเตือนและทบทวน ADR นี้ เช่น ปรับ normalization ของ cache key หรือเพิ่ม capacity ของ large model โดยห้ามลด threshold ต่ำกว่า 0.8 เพราะ accuracy จะไม่ผ่านข้อ 3
+  - review service ต้องโหลด small model ไว้ในตัว จึงใช้หน่วยความจำมากขึ้น และต้อง deploy ใหม่เมื่อเปลี่ยนเวอร์ชันของ small model
+  - precision ของ alert เชิงลบวัดได้ 95.0% (`a-peak40-0.8-cache`) แปลว่ายังมี alert ผิดประมาณ 1 ใน 20 รายการ ถ้าเจ้าของร้านรับไม่ได้ ต้องเพิ่มเงื่อนไขเฉพาะ alert เช่น ส่ง alert เมื่อ confidence ของ label เชิงลบสูงกว่า threshold ที่ใช้ติด label ซึ่งจะแลกกับการพลาด alert มากขึ้น
+  - threshold 0.8 ปรับจาก test set ที่มีรีวิวไม่ซ้ำเพียง 500 รายการ และ load test ที่พีคยาวแค่ 30 วินาทีบนเครื่องเดียว ซึ่ง cache hit ที่พีค (68%) สูงกว่าข้อมูลจริงที่น่าจะเป็น
 
 **Alternatives considered:** at least one topology you rejected, and why.
 
 _อย่างน้อยหนึ่ง topology ที่ไม่เลือก และเหตุผล_
 
-> T1 (synchronous, large model ทุกรีวิว): ได้ accuracy 93.5% แต่เรียก large model 100% (baseline) ทำให้แพงที่สุด และยังผูก latency กับความพร้อมของ large model บน request path โดยไม่จำเป็น เพราะงานนี้ไม่ต้อง real-time
+> - **T1 (synchronous, large model ทุกรีวิว):** ได้ accuracy 93.5% (`a-large`) แต่ช่วงพีคต้องใช้ 40 calls/s ซึ่งเป็นสองเท่าของเพดาน 20 calls/s เมื่อยิงจริงที่ 40 รีวิว/วินาที รีวิว 97% timeout เป็น `PENDING` และส่ง alert ได้เพียง 16 จาก 641 รีวิวเชิงลบ (`a-peak40-large`) และยังแพงที่สุดด้วย
+> - **T2 (small model เป็น library อย่างเดียว):** เร็วที่สุด (p95 28 ms) และไม่มีค่าใช้จ่ายของ large model แต่ accuracy 72.5% (`a-small`) แปลว่าติด label ผิดประมาณ 1 ใน 4 รีวิว ทำให้เกิด alert ผิดมาก ซึ่งเป็นสิ่งที่ scenario นี้ยอมรับไม่ได้
